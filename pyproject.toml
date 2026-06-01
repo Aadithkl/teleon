@@ -1,0 +1,12 @@
+[project]
+name = "telegram-notion-crm"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "telethon>=1.36",
+    "notion-client>=2.2",
+    "anthropic>=0.40",
+    "python-dotenv>=1.0",
+    "rich>=13.0",
+    "click>=8.1",
+]
