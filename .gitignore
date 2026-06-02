@@ -1,6 +1,29 @@
+# credentials & secrets
 .env
+*.env
+*.key
+*.pem
+*.secret
+
+# telegram session (grants full account access)
 *.session
 *.session-journal
-logs/*.log
+.phone_code_hash
+
+# chat registry (contains personal contact names & IDs)
+tracked_chats.json
+
+# logs & runtime data
+logs/
+data/
+
+# python
 __pycache__/
+*.pyc
+*.pyo
 .venv/
+.python-version
+
+# test/debug scripts
+test_*.py
+auth.py

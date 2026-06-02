@@ -1,5 +1,5 @@
 [project]
-name = "telegram-notion-crm"
+name = "teleon"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,4 +9,13 @@ dependencies = [
     "python-dotenv>=1.0",
     "rich>=13.0",
     "click>=8.1",
+    "spacy>=3.7",
+    "vaderSentiment>=3.3",
+    "dateparser>=1.2",
+    "rapidfuzz>=3.6",
+    "ddgs>=0.1",
+    "langdetect>=1.0",
 ]
+
+[project.scripts]
+teleon = "teleon:cli"
