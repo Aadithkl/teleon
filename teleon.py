@@ -794,7 +794,13 @@ def search(query: str, chat: str | None, days: int | None, limit: int, sender: s
             console.print("")
 
     if entities["usernames"]:
-        console.print(f"[bold]Users found:[/bold] {', '.join(entities['usernames'])}")
+        console.print(f"[bold]People found:[/bold] {', '.join(entities['usernames'])}")
+        top = entities["usernames"][:3]
+        console.print(
+            f"[dim]  Profile intel: "
+            + " · ".join(f"teleon profile {u}" for u in top)
+            + "[/dim]"
+        )
     if entities["links"]:
         console.print("[bold]Links:[/bold]")
         for link in entities["links"][:5]:
@@ -847,6 +853,130 @@ def search(query: str, chat: str | None, days: int | None, limit: int, sender: s
     if save and click.confirm(f"Save {total_hits} hit(s) to Notion Follow-ups?", default=False):
         hits_with_chat = [{"chat_name": blk["chat_name"], **blk["hit"]} for blk in unique_blocks]
         _save_hits_to_notion(hits_with_chat, query)
+
+
+# ─── profile ──────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.argument("person")
+@click.option("--days", default=90, show_default=True, help="How far back to scan messages")
+@click.option("--limit", default=30, show_default=True, help="Max messages per chat")
+@click.option("--export", "export_file", default=None, metavar="FILE",
+              help="Export full profile to JSON")
+def profile(person: str, days: int, limit: int, export_file: str | None):
+    """Build an intelligence profile on a person from their Telegram messages.
+
+    Scans all tracked chats for messages sent by this person, extracts topics,
+    interests, expertise, communication style, and generates specific cold DM
+    conversation openers grounded in what they actually said.
+
+    \b
+    Examples:
+      teleon profile "@alice"
+      teleon profile "Alice Chen" --days 30
+      teleon profile "@bob" --export bob.json
+    """
+    entries = tracker.get_tracked()
+    if not entries:
+        console.print("[yellow]No tracked chats. Run 'teleon sync' first.[/yellow]")
+        return
+
+    dialog_names = {e["id"]: e["name"] for e in entries}
+    dialog_kinds = {e["id"]: e.get("kind", "group") for e in entries}
+    dialog_ids = list(dialog_names.keys())
+
+    handle = person.lstrip("@")
+    console.print(f"[bold cyan]Profile[/bold cyan] {person} — scanning {len(dialog_ids)} chat(s), last {days} days\n")
+
+    with console.status("[cyan]Collecting messages...[/cyan]", spinner="dots"):
+        async def _run():
+            msgs = await telegram.get_person_messages(
+                from_user=handle,
+                dialog_ids=dialog_ids,
+                dialog_names=dialog_names,
+                dialog_kinds=dialog_kinds,
+                limit_per_chat=limit,
+                days_back=days,
+            )
+            await telegram.close_client()
+            return msgs
+        messages = asyncio.run(_run())
+
+    if not messages:
+        console.print(f"[yellow]No messages found for '{person}' in tracked chats.[/yellow]")
+        console.print("[dim]Try --days 365, or check the username matches exactly.[/dim]")
+        return
+
+    # ── basic stats ────────────────────────────────────────────────────
+    chats_seen = {m["chat_name"] for m in messages}
+    console.print(f"[bold]{len(messages)} message(s)[/bold] across {len(chats_seen)} chat(s)\n")
+
+    # ── NLP quick pass (always runs, no AI needed) ─────────────────────
+    import nlp as nlp_module
+    texts = [m["text"] for m in messages if m.get("text")]
+    nlp_data = nlp_module.enrich([{"text": t} for t in texts])
+
+    sentiment = nlp_data.get("sentiment", {})
+    entities_nlp = nlp_data.get("entities", {})
+    links_found = nlp_data.get("contact_info", {}).get("urls", [])
+
+    console.print(f"[bold]Sentiment:[/bold] {sentiment.get('label', '?')} "
+                  f"(score {sentiment.get('compound', 0):.2f})")
+    if entities_nlp.get("orgs"):
+        console.print(f"[bold]Orgs mentioned:[/bold] {', '.join(entities_nlp['orgs'][:8])}")
+    if entities_nlp.get("persons"):
+        others = [p for p in entities_nlp["persons"] if handle.lower() not in p.lower()]
+        if others:
+            console.print(f"[bold]People mentioned:[/bold] {', '.join(others[:6])}")
+    if links_found:
+        console.print(f"[bold]Links shared:[/bold] {len(links_found)}")
+        for link in links_found[:3]:
+            console.print(f"  {link[:100]}")
+
+    # ── AI profile (if provider configured) ───────────────────────────
+    console.print("")
+    if config.AI_PROVIDER.lower() == "none":
+        console.print("[dim]Set AI_PROVIDER in .env for full profile + DM openers.[/dim]")
+    else:
+        with console.status("[cyan]Building AI profile...[/cyan]", spinner="dots"):
+            prof = ai_module.build_person_profile(person, messages)
+
+        if prof.get("summary"):
+            console.print(Panel(prof["summary"], title="[bold]Summary[/bold]", border_style="cyan"))
+
+        if prof.get("recent_focus"):
+            console.print(f"[bold]Recent focus:[/bold] {prof['recent_focus']}")
+
+        for label, key in [("Topics", "topics"), ("Expertise", "expertise"),
+                           ("Projects", "projects"), ("Interests", "interests")]:
+            vals = prof.get(key, [])
+            if vals:
+                console.print(f"[bold]{label}:[/bold] {', '.join(vals)}")
+
+        if prof.get("style"):
+            console.print(f"[bold]Style:[/bold] {prof['style']}")
+
+        openers = prof.get("openers", [])
+        if openers:
+            console.print(f"\n[bold cyan]Cold DM openers[/bold cyan]")
+            for i, opener in enumerate(openers, 1):
+                console.print(Panel(opener, title=f"[dim]Option {i}[/dim]",
+                                    border_style="dim", padding=(0, 2)))
+
+    # ── export ─────────────────────────────────────────────────────────
+    if export_file:
+        export_data = {
+            "person": person,
+            "messages_collected": len(messages),
+            "chats": list(chats_seen),
+            "nlp": nlp_data,
+        }
+        if config.AI_PROVIDER.lower() != "none":
+            export_data["profile"] = prof  # type: ignore[possibly-undefined]
+        Path(export_file).write_text(
+            json.dumps(export_data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        console.print(f"\n[green]Exported → {export_file}[/green]")
 
 
 # ─── enrich ───────────────────────────────────────────────────────────────────

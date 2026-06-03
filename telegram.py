@@ -274,6 +274,86 @@ async def search_with_context(
     return blocks
 
 
+async def get_person_messages(
+    from_user: str,
+    dialog_ids: list[int],
+    dialog_names: dict[int, str],
+    dialog_kinds: dict[int, str],
+    limit_per_chat: int = 30,
+    days_back: int | None = None,
+) -> list[dict]:
+    """Collect all messages from a specific person across multiple chats.
+
+    Args:
+        from_user: @username (without @) or display name for group filtering.
+        dialog_ids: Chats to scan.
+        dialog_names: Mapping of dialog_id → display name.
+        dialog_kinds: Mapping of dialog_id → "dm" | "group".
+        limit_per_chat: Max messages to pull per chat.
+        days_back: Only include messages newer than this many days.
+
+    Returns: list of {chat_id, chat_name, message_id, date, sender, username, text}
+    """
+    client = await get_client()
+    cutoff = None
+    if days_back is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+
+    results: list[dict] = []
+    handle = from_user.lstrip("@").lower()
+
+    for dialog_id in dialog_ids:
+        chat_name = dialog_names.get(dialog_id, str(dialog_id))
+        kind = dialog_kinds.get(dialog_id, "group")
+        try:
+            if kind == "dm":
+                # DM: all non-outgoing messages are from the other person
+                async for msg in client.iter_messages(dialog_id, limit=limit_per_chat):
+                    if not msg.text or msg.out:
+                        continue
+                    msg_date = msg.date
+                    if msg_date and msg_date.tzinfo is None:
+                        msg_date = msg_date.replace(tzinfo=timezone.utc)
+                    if cutoff and msg_date and msg_date < cutoff:
+                        break
+                    sender_name, sender_username = _format_sender(msg)
+                    results.append({
+                        "chat_id": dialog_id,
+                        "chat_name": chat_name,
+                        "message_id": msg.id,
+                        "date": msg_date.isoformat() if msg_date else "",
+                        "sender": sender_name,
+                        "username": sender_username,
+                        "text": msg.text,
+                    })
+            else:
+                # Group/channel: server-side filter by username
+                async for msg in client.iter_messages(dialog_id, from_user=handle, limit=limit_per_chat):
+                    if not msg.text:
+                        continue
+                    msg_date = msg.date
+                    if msg_date and msg_date.tzinfo is None:
+                        msg_date = msg_date.replace(tzinfo=timezone.utc)
+                    if cutoff and msg_date and msg_date < cutoff:
+                        break
+                    sender_name, sender_username = _format_sender(msg)
+                    results.append({
+                        "chat_id": dialog_id,
+                        "chat_name": chat_name,
+                        "message_id": msg.id,
+                        "date": msg_date.isoformat() if msg_date else "",
+                        "sender": sender_name,
+                        "username": sender_username,
+                        "text": msg.text,
+                    })
+        except FloodWaitError as e:
+            await _wait_flood(e.seconds, context=f"profiling {from_user} in {chat_name}")
+        except Exception:
+            pass  # person not in this chat
+
+    return results
+
+
 def _format_sender(msg) -> tuple[str, str | None]:
     """Extract display name and @username from a message."""
     sender_name = "Unknown"

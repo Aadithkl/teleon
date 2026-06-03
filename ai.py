@@ -319,6 +319,114 @@ Be specific and reference actual messages. Output plain text, no JSON."""
         return f"AI analysis error: {e}"
 
 
+_PROFILE_FALLBACK = {
+    "summary": "",
+    "topics": [],
+    "projects": [],
+    "interests": [],
+    "expertise": [],
+    "style": "",
+    "recent_focus": "",
+    "openers": [],
+}
+
+
+def _parse_profile(raw: str) -> dict:
+    raw = raw.strip()
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    try:
+        data = json.loads(raw)
+        return {
+            "summary":      str(data.get("summary", "")),
+            "topics":       [str(t) for t in data.get("topics", [])],
+            "projects":     [str(t) for t in data.get("projects", [])],
+            "interests":    [str(t) for t in data.get("interests", [])],
+            "expertise":    [str(t) for t in data.get("expertise", [])],
+            "style":        str(data.get("style", "")),
+            "recent_focus": str(data.get("recent_focus", "")),
+            "openers":      [str(t) for t in data.get("openers", [])],
+        }
+    except json.JSONDecodeError:
+        print(f"Profile parse error. Raw:\n{raw}", file=sys.stderr)
+        return _PROFILE_FALLBACK.copy()
+
+
+def build_person_profile(person: str, messages: list[dict]) -> dict:
+    """Analyse a person's collected messages and return profile + cold DM openers.
+
+    Returns: summary, topics, projects, interests, expertise, style,
+             recent_focus, openers.
+    Falls back to _PROFILE_FALLBACK if provider is 'none' or call fails.
+    """
+    if not messages:
+        return _PROFILE_FALLBACK.copy()
+
+    provider = config.AI_PROVIDER.lower()
+    if provider == "none":
+        return _PROFILE_FALLBACK.copy()
+
+    call = _PROVIDERS.get(provider)
+    if not call:
+        return _PROFILE_FALLBACK.copy()
+
+    chats: dict[str, list[dict]] = {}
+    for m in messages:
+        chats.setdefault(m.get("chat_name", "?"), []).append(m)
+
+    parts: list[str] = []
+    for chat_name, msgs in sorted(chats.items()):
+        parts.append(f"\n[{chat_name}]")
+        for m in sorted(msgs, key=lambda x: x.get("date", "")):
+            date_str = m["date"][:10] if m.get("date") else "?"
+            parts.append(f"  {date_str}: {m['text'][:300]}")
+
+    transcript = "\n".join(parts)
+    if len(transcript) > 5000:
+        transcript = "[earlier messages omitted]\n" + transcript[-5000:]
+
+    prompt = f"""You are an intelligence analyst building a profile on a person to help craft relevant cold outreach.
+
+Person: {person}
+Messages collected: {len(messages)} across {len(chats)} chat(s)
+
+{transcript}
+
+Analyse their messages and extract the following. Be specific — reference actual content, not generic guesses.
+
+topics        What subjects do they regularly discuss? (specific, not vague)
+projects      Products, companies, initiatives, or ventures they mention or are working on
+interests     Professional and personal interests evident in their messages
+expertise     What do they appear knowledgeable or experienced in?
+style         One sentence: how do they communicate? (tone, brevity, formality, technical level)
+recent_focus  One sentence: what have they been talking about most in recent messages?
+openers       3 cold DM conversation starters that are specific and non-generic.
+              Each must reference something they actually said, shared, or are working on.
+              Bad: "I saw you're into crypto"
+              Good: "Your point about Polymarket's fee structure last week was sharp — I've been wrestling with the same liquidity tradeoff on a similar product"
+summary       2-3 sentences: who is this person professionally and what are they focused on right now?
+
+Return ONLY valid JSON:
+{{
+  "summary": "...",
+  "topics": ["...", "..."],
+  "projects": ["...", "..."],
+  "interests": ["...", "..."],
+  "expertise": ["...", "..."],
+  "style": "...",
+  "recent_focus": "...",
+  "openers": ["...", "...", "..."]
+}}"""
+
+    try:
+        raw = call(prompt)
+        return _parse_profile(raw)
+    except Exception as e:
+        print(f"Profile build error ({provider}): {e}", file=sys.stderr)
+        return _PROFILE_FALLBACK.copy()
+
+
 def provider_info() -> str:
     provider = config.AI_PROVIDER.lower()
     if provider == "none":
