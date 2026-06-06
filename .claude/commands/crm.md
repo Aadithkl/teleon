@@ -1,6 +1,6 @@
 # /crm — Telegram → Notion CRM assistant
 
-You are helping manage, run, debug, or extend the CRM at `C:\Users\Aadith\crm`.
+You are helping manage, run, debug, or extend the CRM in the current directory (where this file lives).
 
 ## Pipeline (in order)
 
